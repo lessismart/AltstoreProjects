@@ -70,12 +70,15 @@ actor SQLiteBoxDatabase: BoxRepository {
             if let handle { sqlite3_close(handle) }
             throw BoxDatabaseError.openFailed(msg)
         }
-        self.db = handle
+        guard let opened = handle else {
+            throw BoxDatabaseError.openFailed("SQLite handle was nil")
+        }
+        self.db = opened
 
-        try executeRaw("PRAGMA foreign_keys = ON;")
-        try executeRaw("PRAGMA busy_timeout = 10000;")
-        try executeRaw("PRAGMA journal_mode = WAL;")
-        try migrateIfNeeded()
+        try Self.executeRaw("PRAGMA foreign_keys = ON;", on: opened)
+        try Self.executeRaw("PRAGMA busy_timeout = 10000;", on: opened)
+        try Self.executeRaw("PRAGMA journal_mode = WAL;", on: opened)
+        try Self.migrateIfNeeded(on: opened)
     }
 
     deinit {
@@ -84,38 +87,45 @@ actor SQLiteBoxDatabase: BoxRepository {
         }
     }
 
-    private func migrateIfNeeded() throws {
-        let version = try queryInt32("PRAGMA user_version;")
-        if version < 1 {
-            try inTransaction {
-                try executeRaw("""
-                    CREATE TABLE IF NOT EXISTS boxes(
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        code TEXT UNIQUE,
-                        name TEXT NOT NULL,
-                        location TEXT NOT NULL,
-                        notes TEXT NOT NULL DEFAULT '',
-                        updated INTEGER NOT NULL
-                    );
-                    CREATE TABLE IF NOT EXISTS items(
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        box_id INTEGER NOT NULL REFERENCES boxes(id) ON DELETE CASCADE,
-                        name TEXT NOT NULL,
-                        category TEXT NOT NULL DEFAULT '',
-                        quantity INTEGER NOT NULL,
-                        notes TEXT NOT NULL DEFAULT '',
-                        source TEXT NOT NULL DEFAULT 'manual'
-                    );
-                    CREATE TABLE IF NOT EXISTS photos(
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        box_id INTEGER NOT NULL REFERENCES boxes(id) ON DELETE CASCADE,
-                        filename TEXT NOT NULL UNIQUE
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_items_box ON items(box_id);
-                    CREATE INDEX IF NOT EXISTS idx_photos_box ON photos(box_id);
-                    PRAGMA user_version = \(Self.currentSchemaVersion);
-                """)
+    private static func migrateIfNeeded(on db: OpaquePointer) throws {
+        var version: Int32 = 0
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) == SQLITE_OK, let stmt {
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                version = sqlite3_column_int(stmt, 0)
             }
+            sqlite3_finalize(stmt)
+        }
+        if version < 1 {
+            try executeRaw("""
+                BEGIN IMMEDIATE;
+                CREATE TABLE IF NOT EXISTS boxes(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE,
+                    name TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    updated INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS items(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    box_id INTEGER NOT NULL REFERENCES boxes(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT '',
+                    quantity INTEGER NOT NULL,
+                    notes TEXT NOT NULL DEFAULT '',
+                    source TEXT NOT NULL DEFAULT 'manual'
+                );
+                CREATE TABLE IF NOT EXISTS photos(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    box_id INTEGER NOT NULL REFERENCES boxes(id) ON DELETE CASCADE,
+                    filename TEXT NOT NULL UNIQUE
+                );
+                CREATE INDEX IF NOT EXISTS idx_items_box ON items(box_id);
+                CREATE INDEX IF NOT EXISTS idx_photos_box ON photos(box_id);
+                PRAGMA user_version = \(Self.currentSchemaVersion);
+                COMMIT;
+            """, on: db)
         }
     }
 
@@ -297,8 +307,8 @@ actor SQLiteBoxDatabase: BoxRepository {
     }
 
     func box(code: String) throws -> BoxRecord? {
-        let rows = try queryBoxes("SELECT id, code, name, location, notes, updated FROM boxes WHERE UPPER(code) = UPPER(?);", bind: { stmt in
-            bindText(code, at: 1, in: stmt)
+        let rows = try queryBoxes("SELECT id, code, name, location, notes, updated FROM boxes WHERE UPPER(code) = UPPER(?);", bind: { [self] stmt in
+            self.bindText(code, at: 1, in: stmt)
         })
         return rows.first
     }
@@ -423,9 +433,13 @@ actor SQLiteBoxDatabase: BoxRepository {
     }
 
     private func executeRaw(_ sql: String) throws {
+        try Self.executeRaw(sql, on: requireDB())
+    }
+
+    private static func executeRaw(_ sql: String, on db: OpaquePointer) throws {
         var errPtr: UnsafeMutablePointer<CChar>?
-        if sqlite3_exec(requireDB(), sql, nil, nil, &errPtr) != SQLITE_OK {
-            let msg = errPtr.map { String(cString: $0) } ?? lastErrorMessage()
+        if sqlite3_exec(db, sql, nil, nil, &errPtr) != SQLITE_OK {
+            let msg = errPtr.map { String(cString: $0) } ?? String(cString: sqlite3_errmsg(db))
             if let errPtr { sqlite3_free(errPtr) }
             throw BoxDatabaseError.executionFailed(msg)
         }
@@ -459,7 +473,7 @@ actor SQLiteBoxDatabase: BoxRepository {
         sqlite3_bind_text(stmt, index, value, -1, sqliteTransient)
     }
 
-    private func columnText(_ stmt: OpaquePointer, index: Int32) -> String {
+    private func columnText(_ stmt: OpaquePointer, _ index: Int32) -> String {
         guard let cString = sqlite3_column_text(stmt, index) else { return "" }
         return String(cString: cString)
     }

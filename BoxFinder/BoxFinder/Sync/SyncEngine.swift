@@ -260,7 +260,7 @@ final class SyncEngine: Sendable {
         }
         let remoteData = try JSONSerialization.data(withJSONObject: remoteSnapshotDict)
         let remoteSnapshot = try JSONDecoder().decode(InventorySnapshot.self, from: remoteData)
-        let localSnapshot = try buildLocalSnapshot()
+        let localSnapshot = try await buildLocalSnapshot()
 
         return try Self.computePlan(
             serverRevision: serverRevision,
