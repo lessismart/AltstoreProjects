@@ -1,0 +1,85 @@
+name: Build Unsigned iOS IPA
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned ARM64 iOS app
+        run: |
+          xcodebuild clean build \
+            -project AltStoreTestApp.xcodeproj \
+            -scheme AltStoreTestApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "${{ github.workspace }}/build/DerivedData" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package and validate unsigned IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ github.workspace }}/build/DerivedData/Build/Products/Release-iphoneos/AltStoreTestApp.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: AltStoreTestApp.app not found at $APP_PATH"
+            exit 1
+          fi
+
+          rm -rf "$APP_PATH/_CodeSignature" "$APP_PATH/embedded.mobileprovision"
+
+          file "$APP_PATH/AltStoreTestApp"
+          lipo -info "$APP_PATH/AltStoreTestApp"
+          plutil -lint "$APP_PATH/Info.plist"
+
+          rm -rf "${{ github.workspace }}/build/ipa" "${{ github.workspace }}/AltStoreTestApp.ipa"
+          mkdir -p "${{ github.workspace }}/build/ipa/Payload"
+          cp -R "$APP_PATH" "${{ github.workspace }}/build/ipa/Payload/"
+
+          cd "${{ github.workspace }}/build/ipa"
+          zip -r -y "${{ github.workspace }}/AltStoreTestApp.ipa" Payload
+
+          ls -lh "${{ github.workspace }}/AltStoreTestApp.ipa"
+          unzip -l "${{ github.workspace }}/AltStoreTestApp.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AltStoreTestApp-ipa
+          path: AltStoreTestApp.ipa
+          retention-days: 30
+
+      - name: Create GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" AltStoreTestApp.ipa \
+            --title "AltStoreTestApp ${GITHUB_REF_NAME}" \
+            --generate-notes
