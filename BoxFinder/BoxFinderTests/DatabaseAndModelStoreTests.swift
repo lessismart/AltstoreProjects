@@ -17,8 +17,10 @@ final class DatabaseAndModelStoreTests: XCTestCase {
         _ = try await db.addPhoto(boxId: box.id, filename: "photo-1.jpg")
         let removedPhotos = try await db.deleteBox(id: box.id)
         XCTAssertEqual(removedPhotos, ["photo-1.jpg"])
-        XCTAssertEqual(try await db.allItems().count, 0)
-        XCTAssertEqual(try await db.allBoxes().count, 0)
+        let remainingItems = try await db.allItems()
+        let remainingBoxes = try await db.allBoxes()
+        XCTAssertEqual(remainingItems.count, 0)
+        XCTAssertEqual(remainingBoxes.count, 0)
 
         // Restore explicit ID 42 and ensure next auto-inserted box receives ID 43
         try await db.replaceAll(
