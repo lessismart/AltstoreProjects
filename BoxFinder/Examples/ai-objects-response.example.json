@@ -1,0 +1,14 @@
+{
+  "objects": [
+    {
+      "label": "screwdriver",
+      "box_2d": [100, 200, 500, 400],
+      "uncertain": false
+    },
+    {
+      "label": "coiled USB cable",
+      "box_2d": [420, 510, 820, 910],
+      "uncertain": true
+    }
+  ]
+}

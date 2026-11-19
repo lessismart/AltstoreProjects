@@ -1,0 +1,16 @@
+{
+  "items": [
+    {
+      "name": "USB cable",
+      "category": "electronics",
+      "quantity": 1,
+      "uncertain": true
+    },
+    {
+      "name": "Phillips screwdriver",
+      "category": "tools",
+      "quantity": 2,
+      "uncertain": false
+    }
+  ]
+}

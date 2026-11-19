@@ -1,0 +1,54 @@
+{
+  "format": "box-finder-android-v1",
+  "boxes": [
+    {
+      "id": 1,
+      "code": "BX-0001",
+      "name": "Garage Hardware",
+      "location": "Garage Shelf A",
+      "notes": "Red plastic tote",
+      "updated": 1760284800000
+    }
+  ],
+  "items": [
+    {
+      "id": 1,
+      "box_id": 1,
+      "name": "Phillips Screwdriver",
+      "category": "tools",
+      "quantity": 2,
+      "notes": "Medium #2 tip",
+      "source": "manual"
+    },
+    {
+      "id": 2,
+      "box_id": 1,
+      "name": "USB-C Cable",
+      "category": "electronics",
+      "quantity": 1,
+      "notes": "Check identification",
+      "source": "vision_openrouter"
+    }
+  ],
+  "photos": [
+    {
+      "id": 1,
+      "box_id": 1,
+      "filename": "example-photo.jpg",
+      "jpegBase64": "<BASE64_JPEG_BYTES_REDACTED>",
+      "detections": {
+        "objects": [
+          {
+            "label": "Phillips Screwdriver",
+            "box_2d": [120, 180, 560, 420],
+            "uncertain": false
+          }
+        ],
+        "imageSha256": "<SHA256_OF_ORIGINAL_JPEG_HEX>",
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash",
+        "created": 1760284850000
+      }
+    }
+  ]
+}

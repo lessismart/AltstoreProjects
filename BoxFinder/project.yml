@@ -1,0 +1,86 @@
+name: BoxFinder
+options:
+  bundleIdPrefix: com.lessy
+  deploymentTarget:
+    iOS: "16.0"
+packages:
+  LiteRTLM:
+    url: https://github.com/google-ai-edge/LiteRT-LM.git
+    exactVersion: 0.19.1
+targets:
+  BoxFinder:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: BoxFinder
+    dependencies:
+      - package: LiteRTLM
+        product: LiteRTLM
+      - sdk: libsqlite3.tbd
+      - sdk: libz.tbd
+    info:
+      path: BoxFinder/Info.plist
+      properties:
+        CFBundleDisplayName: Box Finder
+        CFBundleShortVersionString: "2.2.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: false
+        NSCameraUsageDescription: Box Finder uses the camera to photograph storage box contents and scan box QR labels.
+        NSPhotoLibraryUsageDescription: Box Finder lets you select existing photos of your boxes and QR labels from your library.
+        NSPhotoLibraryAddUsageDescription: Box Finder saves generated box QR label images when you choose to save them.
+        NSLocalNetworkUsageDescription: Box Finder uses your local network to manually sync box inventory and photos with your Raspberry Pi on home Wi-Fi.
+        NSBonjourServices:
+          - _http._tcp
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lessy.boxfinder.ios
+        PRODUCT_NAME: BoxFinder
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "2.2.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+        SUPPORTS_MACCATALYST: "NO"
+  BoxFinderTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: BoxFinderTests
+    dependencies:
+      - target: BoxFinder
+    settings:
+      base:
+        PRODUCT_NAME: BoxFinderTests
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+schemes:
+  BoxFinder:
+    build:
+      targets:
+        BoxFinder: all
+        BoxFinderTests:
+          - test
+    test:
+      targets:
+        - BoxFinderTests

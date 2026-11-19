@@ -1,0 +1,119 @@
+name: Build and Test Box Finder iOS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "BoxFinder/**"
+      - ".github/workflows/build-boxfinder.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GIT_LFS_SKIP_SMUDGE: "1"
+
+jobs:
+  test-and-build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log Xcode and Simulator environment
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate BoxFinder Xcode project
+        run: |
+          cd BoxFinder
+          xcodegen generate
+
+      - name: Resolve Swift Package dependencies (LiteRT-LM)
+        run: |
+          cd BoxFinder
+          GIT_LFS_SKIP_SMUDGE=1 xcodebuild -resolvePackageDependencies \
+            -project BoxFinder.xcodeproj \
+            -scheme BoxFinder
+
+      - name: Run BoxFinder unit tests on iOS Simulator
+        run: |
+          SIM_UDID=$(xcrun simctl list devices available iPhone -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in sorted(data.get("devices", {}).items(), reverse=True):
+              for dev in devices:
+                  if dev.get("isAvailable"):
+                      print(dev["udid"])
+                      sys.exit(0)
+          sys.exit(1)
+          ')
+          echo "Selected Simulator UDID: $SIM_UDID"
+          cd BoxFinder
+          xcodebuild test \
+            -project BoxFinder.xcodeproj \
+            -scheme BoxFinder \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Build unsigned ARM64 iOS app
+        run: |
+          cd BoxFinder
+          xcodebuild clean build \
+            -project BoxFinder.xcodeproj \
+            -scheme BoxFinder \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "${{ github.workspace }}/BoxFinder/build/DerivedData" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package and validate unsigned BoxFinder.ipa
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ github.workspace }}/BoxFinder/build/DerivedData/Build/Products/Release-iphoneos/BoxFinder.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: BoxFinder.app not found at $APP_PATH"
+            exit 1
+          fi
+
+          find "$APP_PATH" -name "_CodeSignature" -type d -prune -exec rm -rf {} +
+          rm -f "$APP_PATH/embedded.mobileprovision"
+
+          ls -la "$APP_PATH"
+          if [ -d "$APP_PATH/Frameworks" ]; then
+            ls -la "$APP_PATH/Frameworks"
+          fi
+          file "$APP_PATH/BoxFinder"
+          lipo -info "$APP_PATH/BoxFinder"
+          plutil -lint "$APP_PATH/Info.plist"
+
+          rm -rf "${{ github.workspace }}/BoxFinder/build/ipa" "${{ github.workspace }}/BoxFinder/BoxFinder.ipa"
+          mkdir -p "${{ github.workspace }}/BoxFinder/build/ipa/Payload"
+          cp -R "$APP_PATH" "${{ github.workspace }}/BoxFinder/build/ipa/Payload/"
+
+          cd "${{ github.workspace }}/BoxFinder/build/ipa"
+          zip -r -y "${{ github.workspace }}/BoxFinder/BoxFinder.ipa" Payload
+
+          ls -lh "${{ github.workspace }}/BoxFinder/BoxFinder.ipa"
+          unzip -l "${{ github.workspace }}/BoxFinder/BoxFinder.ipa"
+
+      - name: Upload BoxFinder IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BoxFinder-ipa
+          path: BoxFinder/BoxFinder.ipa
+          retention-days: 30
