@@ -37,5 +37,8 @@ final class AiJsonAndQRTests: XCTestCase {
         let qrImage = try XCTUnwrap(QRCodeService.generateQRImage(for: "BX-0005", size: 500))
         let decodedPayload = try QRCodeService.decodeQRPayload(from: qrImage)
         XCTAssertEqual(decodedPayload, "BX-0005")
+
+        let labelCard = try XCTUnwrap(QRCodeService.renderPrintableLabelCard(for: box))
+        XCTAssertEqual(labelCard.size, CGSize(width: 760, height: 920))
     }
 }

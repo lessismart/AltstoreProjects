@@ -84,12 +84,13 @@ enum QRCodeService {
         let extent = outputImage.extent.integral
         guard extent.width > 0, extent.height > 0 else { return nil }
 
-        let scale = max(1, floor(size / max(extent.width, extent.height)))
+        let moduleDimension = max(extent.width, extent.height)
+        let scale = max(1, floor(size / (moduleDimension + 8)))
         let scaled = outputImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-        let ciContext = CIContext()
+        let ciContext = CIContext(options: [.useSoftwareRenderer: true])
         guard let cgImage = ciContext.createCGImage(scaled, from: scaled.extent) else { return nil }
 
-        let quietZone = floor(size * 0.06)
+        let quietZone = scale * 4
         let canvasSize = CGSize(width: scaled.extent.width + quietZone * 2, height: scaled.extent.height + quietZone * 2)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1.0
@@ -167,19 +168,37 @@ enum QRCodeService {
         let longest = max(image.size.width, image.size.height)
         let scale = longest > 2400 ? 2400 / longest : 1.0
         let targetSize = CGSize(width: max(1, floor(image.size.width * scale)), height: max(1, floor(image.size.height * scale)))
-        let upright = UIGraphicsImageRenderer(size: targetSize, format: format).image { _ in
+        let upright = UIGraphicsImageRenderer(size: targetSize, format: format).image { ctx in
+            UIColor.white.setFill()
+            ctx.fill(CGRect(origin: .zero, size: targetSize))
             image.draw(in: CGRect(origin: .zero, size: targetSize))
         }
         guard let cgImage = upright.cgImage else {
             throw QRScanError.unreadableImage
         }
 
+        // Software CoreImage QR detector works deterministically on headless Simulators as well as devices.
+        let ciContext = CIContext(options: [.useSoftwareRenderer: true])
+        if let detector = CIDetector(
+            ofType: CIDetectorTypeQRCode,
+            context: ciContext,
+            options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]
+        ) {
+            let ciImage = CIImage(cgImage: cgImage)
+            let features = detector.features(in: ciImage)
+            if let payload = features
+                .compactMap({ ($0 as? CIQRCodeFeature)?.messageString })
+                .first(where: { !$0.isEmpty }) {
+                return payload
+            }
+        }
+
+        // Fallback to Vision for perspective-distorted or tilted camera captures.
         let request = VNDetectBarcodesRequest()
         request.symbologies = [.qr]
         let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-        try handler.perform([request])
-
-        if let match = request.results?.first(where: { !($0.payloadStringValue ?? "").isEmpty }),
+        if (try? handler.perform([request])) != nil,
+           let match = request.results?.first(where: { !($0.payloadStringValue ?? "").isEmpty }),
            let payload = match.payloadStringValue {
             return payload
         }
