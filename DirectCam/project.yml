@@ -1,0 +1,76 @@
+name: DirectCam
+options:
+  bundleIdPrefix: com.lessy
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  DirectCam:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: DirectCam
+    info:
+      path: DirectCam/Info.plist
+      properties:
+        CFBundleDisplayName: DirectCam
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: false
+        NSLocalNetworkUsageDescription: DirectCam connects directly to IP cameras on your local Wi-Fi network for live video streaming, discovery, and camera administration.
+        NSBonjourServices:
+          - _http._tcp
+          - _rtsp._tcp
+        NSPhotoLibraryAddUsageDescription: DirectCam saves camera snapshots and recorded video clips to your Photos library when you choose to export them.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoads: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lessy.directcam.ios
+        PRODUCT_NAME: DirectCam
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+        SUPPORTS_MACCATALYST: "NO"
+  DirectCamTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: DirectCamTests
+    dependencies:
+      - target: DirectCam
+    settings:
+      base:
+        PRODUCT_NAME: DirectCamTests
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGN_IDENTITY: ""
+schemes:
+  DirectCam:
+    build:
+      targets:
+        DirectCam: all
+        DirectCamTests:
+          - test
+    test:
+      targets:
+        - DirectCamTests

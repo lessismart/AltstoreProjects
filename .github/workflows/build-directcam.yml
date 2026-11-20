@@ -1,0 +1,106 @@
+name: Build and Test DirectCam iOS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "DirectCam/**"
+      - ".github/workflows/build-directcam.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log Xcode and Simulator environment
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate DirectCam Xcode project
+        run: |
+          cd DirectCam
+          xcodegen generate
+
+      - name: Run DirectCam unit tests on iOS Simulator
+        run: |
+          SIM_UDID=$(xcrun simctl list devices available iPhone -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          for runtime, devices in sorted(data.get("devices", {}).items(), reverse=True):
+              for dev in devices:
+                  if dev.get("isAvailable"):
+                      print(dev["udid"])
+                      sys.exit(0)
+          sys.exit(1)
+          ')
+          echo "Selected Simulator UDID: $SIM_UDID"
+          cd DirectCam
+          xcodebuild test \
+            -project DirectCam.xcodeproj \
+            -scheme DirectCam \
+            -destination "platform=iOS Simulator,id=$SIM_UDID" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Build unsigned ARM64 iOS app
+        run: |
+          cd DirectCam
+          xcodebuild clean build \
+            -project DirectCam.xcodeproj \
+            -scheme DirectCam \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath "${{ github.workspace }}/DirectCam/build/DerivedData" \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package and validate unsigned DirectCam.ipa
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ github.workspace }}/DirectCam/build/DerivedData/Build/Products/Release-iphoneos/DirectCam.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: DirectCam.app not found at $APP_PATH"
+            exit 1
+          fi
+
+          find "$APP_PATH" -name "_CodeSignature" -type d -prune -exec rm -rf {} +
+          rm -f "$APP_PATH/embedded.mobileprovision"
+
+          ls -la "$APP_PATH"
+          file "$APP_PATH/DirectCam"
+          lipo -info "$APP_PATH/DirectCam"
+          plutil -lint "$APP_PATH/Info.plist"
+
+          rm -rf "${{ github.workspace }}/DirectCam/build/ipa" "${{ github.workspace }}/DirectCam/DirectCam.ipa"
+          mkdir -p "${{ github.workspace }}/DirectCam/build/ipa/Payload"
+          cp -R "$APP_PATH" "${{ github.workspace }}/DirectCam/build/ipa/Payload/"
+
+          cd "${{ github.workspace }}/DirectCam/build/ipa"
+          zip -r -y "${{ github.workspace }}/DirectCam/DirectCam.ipa" Payload
+
+          ls -lh "${{ github.workspace }}/DirectCam/DirectCam.ipa"
+          unzip -l "${{ github.workspace }}/DirectCam/DirectCam.ipa"
+
+      - name: Upload DirectCam IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DirectCam-ipa
+          path: DirectCam/DirectCam.ipa
+          retention-days: 30
