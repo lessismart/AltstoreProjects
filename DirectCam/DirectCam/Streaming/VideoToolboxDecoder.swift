@@ -124,7 +124,7 @@ final class VideoToolboxDecoder {
 
         if let session = self.decompressionSession {
             var infoFlags = VTDecodeInfoFlags()
-            let decodeStatus = VTDecompressionSessionDecodeFrameWithOutputHandler(
+            let decodeStatus = VTDecompressionSessionDecodeFrame(
                 session,
                 sampleBuffer: sampleBuffer,
                 flags: [],
