@@ -197,7 +197,8 @@ final class AppState: ObservableObject {
                 var snapURI = camera.discoveredSnapshotURI
                 if snapURI.isEmpty {
                     let caps = try await self.onvif.getCapabilities(host: camera.host, port: camera.onvifPort, username: camera.username, password: pwd)
-                    let mediaURL = URL(string: caps.mediaXAddr) ?? (try self.onvif.baseDeviceURL(host: camera.host, port: camera.onvifPort))
+                    let fallbackMediaURL = try self.onvif.baseDeviceURL(host: camera.host, port: camera.onvifPort)
+                    let mediaURL = URL(string: caps.mediaXAddr) ?? fallbackMediaURL
                     let profiles = try await self.onvif.getMediaProfiles(mediaURL: mediaURL, username: camera.username, password: pwd)
                     if let tok = profiles.first?.token {
                         snapURI = (try await self.onvif.getSnapshotURI(mediaURL: mediaURL, profileToken: tok, username: camera.username, password: pwd)) ?? ""
