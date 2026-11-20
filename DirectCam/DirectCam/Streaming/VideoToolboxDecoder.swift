@@ -12,10 +12,6 @@ struct DecodedVideoFrame {
     var isKeyFrame: Bool
 }
 
-private final class DecodeBox {
-    var pixelBuffer: CVPixelBuffer?
-}
-
 final class VideoToolboxDecoder {
     private let codec: RTSPVideoCodec
     private let ciContext = CIContext(options: nil)
@@ -25,6 +21,7 @@ final class VideoToolboxDecoder {
     private var sps: Data?
     private var pps: Data?
     private var frameCounter: Int64 = 0
+    private var hasSeenKeyFrame = false
 
     init(codec: RTSPVideoCodec, vps: Data? = nil, sps: Data? = nil, pps: Data? = nil) {
         self.codec = codec
@@ -54,6 +51,10 @@ final class VideoToolboxDecoder {
         self.updateParameterSets(vps: unit.vps, sps: unit.sps, pps: unit.pps)
         guard let fmt = self.formatDescription, !unit.nalUnits.isEmpty else {
             return nil
+        }
+        if !self.hasSeenKeyFrame {
+            guard unit.isKeyFrame else { return nil }
+            self.hasSeenKeyFrame = true
         }
 
         let avccData = RTPVideoDepacketizer.avccLengthPrefixedData(from: unit.nalUnits)
@@ -107,25 +108,34 @@ final class VideoToolboxDecoder {
         )
         guard sbStatus == noErr, let sampleBuffer else { return nil }
 
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
+           CFArrayGetCount(attachments) > 0,
+           let rawDict = CFArrayGetValueAtIndex(attachments, 0) {
+            let dict = unsafeBitCast(rawDict, to: CFMutableDictionary.self)
+            CFDictionarySetValue(
+                dict,
+                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+            )
+        }
+
         let dim = CMVideoFormatDescriptionGetDimensions(fmt)
         var decodedPixelBuffer: CVPixelBuffer?
 
         if let session = self.decompressionSession {
-            let box = DecodeBox()
-            let boxPtr = Unmanaged.passRetained(box).toOpaque()
             var infoFlags = VTDecodeInfoFlags()
-            let decodeStatus = VTDecompressionSessionDecodeFrame(
+            let decodeStatus = VTDecompressionSessionDecodeFrameWithOutputHandler(
                 session,
                 sampleBuffer: sampleBuffer,
                 flags: [],
-                frameRefcon: boxPtr,
                 infoFlagsOut: &infoFlags
-            )
+            ) { status, _, imageBuffer, _, _ in
+                if status == noErr, let imageBuffer {
+                    decodedPixelBuffer = imageBuffer
+                }
+            }
             if decodeStatus == noErr {
                 VTDecompressionSessionWaitForAsynchronousFrames(session)
-                decodedPixelBuffer = box.pixelBuffer
-            } else {
-                Unmanaged<DecodeBox>.fromOpaque(boxPtr).release()
             }
         }
 
@@ -196,21 +206,12 @@ final class VideoToolboxDecoder {
             return
         }
         self.formatDescription = newFormat
+        self.hasSeenKeyFrame = false
         if let oldSession = self.decompressionSession {
             VTDecompressionSessionInvalidate(oldSession)
             self.decompressionSession = nil
         }
 
-        var callbackRecord = VTDecompressionOutputCallbackRecord(
-            decompressionOutputCallback: { _, sourceFrameRefCon, status, _, imageBuffer, _, _ in
-                guard let sourceFrameRefCon else { return }
-                let box = Unmanaged<DecodeBox>.fromOpaque(sourceFrameRefCon).takeRetainedValue()
-                if status == noErr, let imageBuffer {
-                    box.pixelBuffer = imageBuffer
-                }
-            },
-            decompressionOutputRefCon: nil
-        )
         let attrs: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferIOSurfacePropertiesKey: [:]
@@ -221,7 +222,7 @@ final class VideoToolboxDecoder {
             formatDescription: newFormat,
             decoderSpecification: nil,
             imageBufferAttributes: attrs as CFDictionary,
-            outputCallback: &callbackRecord,
+            outputCallback: nil,
             decompressionSessionOut: &session
         )
         if status == noErr {

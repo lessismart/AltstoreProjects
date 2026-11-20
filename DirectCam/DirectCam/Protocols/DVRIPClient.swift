@@ -345,7 +345,7 @@ actor DVRIPSession {
     private let host: String
     private let port: Int
     private var connection: NWConnection?
-    private var buffer = Data()
+    private var buffer = ByteBuffer()
     private var sessionId: UInt32 = 0
     private var sequence: UInt32 = 0
 
@@ -627,7 +627,8 @@ actor DVRIPSession {
 
     private func readPacket(timeout: TimeInterval) async throws -> (DVRIPPacketHeader, Data) {
         try await self.fillBuffer(minBytes: DVRIPProtocol.headerLength, timeout: timeout)
-        guard let hdr = DVRIPProtocol.decodeHeader(self.buffer) else {
+        guard let hdrData = self.buffer.slice(0..<DVRIPProtocol.headerLength),
+              let hdr = DVRIPProtocol.decodeHeader(hdrData) else {
             throw NSError(domain: "DirectCam.DVRIP", code: 22, userInfo: [NSLocalizedDescriptionKey: "Invalid DVRIP packet header."])
         }
         let bodyLen = Int(hdr.payloadLength)
@@ -636,8 +637,8 @@ actor DVRIPSession {
         }
         let frameTotal = DVRIPProtocol.headerLength + bodyLen
         try await self.fillBuffer(minBytes: frameTotal, timeout: timeout)
-        let body = self.buffer.subdata(in: DVRIPProtocol.headerLength..<frameTotal)
-        self.buffer.removeFirst(frameTotal)
+        self.buffer.dropFirst(DVRIPProtocol.headerLength)
+        let body = self.buffer.read(bodyLen) ?? Data()
         return (hdr, body)
     }
 

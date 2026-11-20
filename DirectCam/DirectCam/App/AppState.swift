@@ -57,9 +57,16 @@ final class AppState: ObservableObject {
             self.cameras = [starter]
             try? self.cameraStore.saveCameras(self.cameras)
             self.selectedCameraID = starter.id
+            self.cameraStore.saveSelectedCameraID(starter.id)
         } else {
             self.cameras = loaded
-            self.selectedCameraID = loaded.first?.id
+            let savedID = self.cameraStore.loadSelectedCameraID()
+            if let savedID, loaded.contains(where: { $0.id == savedID }) {
+                self.selectedCameraID = savedID
+            } else {
+                // Prefer any camera that already has a stored credential if savedID was unset
+                self.selectedCameraID = loaded.first(where: { !KeychainVault.loadPassword(forCameraID: $0.id).isEmpty })?.id ?? loaded.first?.id
+            }
         }
         self.monitorSettings = self.cameraStore.loadMonitorSettings()
         self.mediaItems = self.mediaStore.loadMediaItems()
@@ -111,12 +118,29 @@ final class AppState: ObservableObject {
             self.cameras[idx] = profile
         } else {
             self.cameras.append(profile)
-            self.selectedCameraID = profile.id
         }
+        self.selectedCameraID = profile.id
+        self.cameraStore.saveSelectedCameraID(profile.id)
+
         if let password {
-            try? KeychainVault.savePassword(password, forCameraID: profile.id)
+            do {
+                let backend = try KeychainVault.savePassword(password, forCameraID: profile.id)
+                switch backend {
+                case .keychain:
+                    self.log("Saved password for '\(profile.name)' to Apple Keychain.")
+                case .localProtectedFile(let status):
+                    self.log("Keychain returned \(status); saved password for '\(profile.name)' to protected device vault.")
+                }
+            } catch {
+                self.log("Failed saving password for '\(profile.name)': \(error.localizedDescription)")
+                self.showBanner("Password save failed: \(error.localizedDescription)")
+            }
         }
-        try? self.cameraStore.saveCameras(self.cameras)
+        do {
+            try self.cameraStore.saveCameras(self.cameras)
+        } catch {
+            self.showBanner("Failed saving camera list: \(error.localizedDescription)")
+        }
         self.ensureSessionsExist()
         self.log("Saved profile '\(profile.name)' (\(profile.host)).")
     }
@@ -129,12 +153,14 @@ final class AppState: ObservableObject {
         try? self.cameraStore.saveCameras(self.cameras)
         if self.selectedCameraID == profile.id {
             self.selectedCameraID = self.cameras.first?.id
+            self.cameraStore.saveSelectedCameraID(self.selectedCameraID)
         }
         self.log("Removed profile '\(profile.name)'.")
     }
 
     func selectCamera(_ camera: CameraProfile) {
         self.selectedCameraID = camera.id
+        self.cameraStore.saveSelectedCameraID(camera.id)
         self.clearAdminState()
     }
 

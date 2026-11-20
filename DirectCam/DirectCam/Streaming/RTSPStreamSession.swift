@@ -31,16 +31,18 @@ final class RTSPStreamSession: ObservableObject {
     private var activeRecorderKind: LocalMediaKind = .recording
 
     private var connection: NWConnection?
-    private var recvBuffer = Data()
+    private var recvBuffer = ByteBuffer()
     private var cseq = 1
     private var rtspURLString = ""
     private var sessionId = ""
     private var videoDepacketizer: RTPVideoDepacketizer?
     private var videoDecoder: VideoToolboxDecoder?
     private var audioCodec: RTSPAudioCodec?
-    private var videoPayloadType = 96
-    private var audioPayloadType = 8
-    private var lastAuthHeader: String?
+    private var videoRTPChannel: UInt8 = 0
+    private var audioRTPChannel: UInt8 = 2
+    private var digestChallenge: (realm: String, nonce: String, qop: String?)?
+    private var basicChallenge = false
+
     private var currentProfile: CameraProfile?
     private var currentPassword = ""
     private var monitorSettings = MonitorSettings()
@@ -89,11 +91,14 @@ final class RTSPStreamSession: ObservableObject {
         self.isConnecting = true
         self.statusText = "Connecting to \(profile.host):\(profile.rtspPort)..."
 
-        let rtspURL = RTSPProtocol.buildRTSPURL(profile: profile, password: password, quality: chosenQuality)
-        self.rtspURLString = rtspURL
+        self.rtspURLString = RTSPProtocol.buildWireRequestURI(profile: profile, password: password, quality: chosenQuality)
         self.cseq = 1
         self.sessionId = ""
-        self.lastAuthHeader = nil
+        self.digestChallenge = nil
+        self.basicChallenge = false
+        self.videoRTPChannel = 0
+        self.audioRTPChannel = 2
+        self.audioCodec = nil
         self.recvBuffer.removeAll()
 
         guard let nwPort = NWEndpoint.Port(rawValue: UInt16(clamping: profile.rtspPort)) else {
@@ -106,7 +111,7 @@ final class RTSPStreamSession: ObservableObject {
         self.connection = conn
         conn.stateUpdateHandler = { [weak self] state in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.connection === conn else { return }
                 switch state {
                 case .ready:
                     self.performRTSPHandshake()
@@ -140,6 +145,7 @@ final class RTSPStreamSession: ObservableObject {
         }
         self.connection?.cancel()
         self.connection = nil
+        self.recvBuffer.removeAll()
         self.audioPlayer.stop()
         self.displayLayer.flushAndRemoveImage()
         self.isConnected = false
@@ -213,27 +219,20 @@ final class RTSPStreamSession: ObservableObject {
             guard let self else { return }
             do {
                 self.statusText = "RTSP Handshake..."
-                _ = try await self.sendRTSPRequest(method: "OPTIONS", url: self.rtspURLString)
+                _ = try await self.sendRTSPRequestWithAuthRetry(method: "OPTIONS", url: self.rtspURLString)
 
-                var describeResp = try await self.sendRTSPRequest(
+                let describeResp = try await self.sendRTSPRequestWithAuthRetry(
                     method: "DESCRIBE",
                     url: self.rtspURLString,
                     extraHeaders: ["Accept": "application/sdp"]
                 )
-                if describeResp.statusCode == 401, let authHdr = describeResp.headers["www-authenticate"] {
-                    self.applyAuthChallenge(authHdr, method: "DESCRIBE", uri: self.rtspURLString)
-                    describeResp = try await self.sendRTSPRequest(
-                        method: "DESCRIBE",
-                        url: self.rtspURLString,
-                        extraHeaders: ["Accept": "application/sdp"]
-                    )
-                }
                 guard describeResp.statusCode == 200 else {
                     throw NSError(domain: "DirectCam.RTSP", code: describeResp.statusCode, userInfo: [
                         NSLocalizedDescriptionKey: "Camera rejected RTSP DESCRIBE (status \(describeResp.statusCode)). Check username, password, or stream path."
                     ])
                 }
 
+                let contentBase = describeResp.headers["content-base"] ?? self.rtspURLString
                 let sdpInfo = RTSPProtocol.parseSDP(describeResp.bodyText)
                 guard let videoTrack = sdpInfo.videoTrack else {
                     throw NSError(domain: "DirectCam.RTSP", code: 2, userInfo: [
@@ -244,7 +243,6 @@ final class RTSPStreamSession: ObservableObject {
                 let isHEVC = videoTrack.encodingName.contains("265") || videoTrack.encodingName.contains("HEVC")
                 let codec: RTSPVideoCodec = isHEVC ? .hevc : .h264
                 self.codecLabel = codec.rawValue
-                self.videoPayloadType = videoTrack.payloadType
                 self.videoDepacketizer = RTPVideoDepacketizer(codec: codec)
                 self.videoDecoder = VideoToolboxDecoder(
                     codec: codec,
@@ -253,34 +251,49 @@ final class RTSPStreamSession: ObservableObject {
                     pps: videoTrack.pps
                 )
 
-                let videoSetupURL = RTSPProtocol.resolveControlURI(control: videoTrack.controlURI, baseURL: self.rtspURLString)
-                let setupVid = try await self.sendRTSPRequest(
+                let videoSetupURL = RTSPProtocol.resolveControlURI(control: videoTrack.controlURI, baseURL: contentBase)
+                let setupVid = try await self.sendRTSPRequestWithAuthRetry(
                     method: "SETUP",
                     url: videoSetupURL,
                     extraHeaders: ["Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"]
                 )
+                guard (200...299).contains(setupVid.statusCode) else {
+                    throw NSError(domain: "DirectCam.RTSP", code: setupVid.statusCode, userInfo: [
+                        NSLocalizedDescriptionKey: "RTSP video SETUP failed (status \(setupVid.statusCode))."
+                    ])
+                }
                 if let sessHdr = setupVid.headers["session"] {
                     self.sessionId = sessHdr.split(separator: ";").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+                }
+                if let transport = setupVid.headers["transport"],
+                   let channels = RTSPProtocol.parseInterleavedChannels(fromTransportHeader: transport) {
+                    self.videoRTPChannel = channels.rtp
                 }
 
                 if let audioTrack = sdpInfo.audioTrack {
                     let upper = audioTrack.encodingName.uppercased()
                     if upper == "PCMA" || upper == "PCMU" {
-                        self.audioCodec = upper == "PCMA" ? .pcma : .pcmu
-                        self.audioPayloadType = audioTrack.payloadType
-                        self.audioPlayer.configure(sampleRate: Double(max(8000, audioTrack.clockRate)))
-                        let audioSetupURL = RTSPProtocol.resolveControlURI(control: audioTrack.controlURI, baseURL: self.rtspURLString)
-                        _ = try? await self.sendRTSPRequest(
+                        let audioSetupURL = RTSPProtocol.resolveControlURI(control: audioTrack.controlURI, baseURL: contentBase)
+                        if let setupAud = try? await self.sendRTSPRequestWithAuthRetry(
                             method: "SETUP",
                             url: audioSetupURL,
                             extraHeaders: ["Transport": "RTP/AVP/TCP;unicast;interleaved=2-3"]
-                        )
+                        ), (200...299).contains(setupAud.statusCode) {
+                            self.audioCodec = upper == "PCMA" ? .pcma : .pcmu
+                            if let transport = setupAud.headers["transport"],
+                               let channels = RTSPProtocol.parseInterleavedChannels(fromTransportHeader: transport) {
+                                self.audioRTPChannel = channels.rtp
+                            }
+                            self.audioPlayer.configure(sampleRate: Double(max(8000, audioTrack.clockRate)))
+                        }
                     }
                 }
 
-                var playHeaders: [String: String] = ["Range": "npt=0.000-"]
-                if !self.sessionId.isEmpty { playHeaders["Session"] = self.sessionId }
-                let playResp = try await self.sendRTSPRequest(method: "PLAY", url: self.rtspURLString, extraHeaders: playHeaders)
+                let playResp = try await self.sendRTSPRequestWithAuthRetry(
+                    method: "PLAY",
+                    url: contentBase,
+                    extraHeaders: ["Range": "npt=0.000-"]
+                )
                 guard (200...299).contains(playResp.statusCode) else {
                     throw NSError(domain: "DirectCam.RTSP", code: playResp.statusCode, userInfo: [
                         NSLocalizedDescriptionKey: "RTSP PLAY failed (status \(playResp.statusCode))."
@@ -298,10 +311,10 @@ final class RTSPStreamSession: ObservableObject {
         }
     }
 
-    private func applyAuthChallenge(_ header: String, method: String, uri: String) {
+    private func authorizationHeader(method: String, uri: String) -> String? {
         let user = self.currentProfile?.username ?? "admin"
-        if let challenge = HTTPDigestHelper.parseChallenge(header) {
-            self.lastAuthHeader = HTTPDigestHelper.authorizationHeader(
+        if let challenge = self.digestChallenge {
+            return HTTPDigestHelper.authorizationHeader(
                 method: method,
                 uri: uri,
                 username: user,
@@ -310,13 +323,38 @@ final class RTSPStreamSession: ObservableObject {
                 nonce: challenge.nonce,
                 qop: challenge.qop
             )
-        } else {
-            let b64 = Data("\(user):\(self.currentPassword)".utf8).base64EncodedString()
-            self.lastAuthHeader = "Basic \(b64)"
         }
+        if self.basicChallenge {
+            let b64 = Data("\(user):\(self.currentPassword)".utf8).base64EncodedString()
+            return "Basic \(b64)"
+        }
+        return nil
     }
 
-    private func sendRTSPRequest(method: String, url: String, extraHeaders: [String: String] = [:]) async throws -> (statusCode: Int, headers: [String: String], bodyText: String) {
+    private func sendRTSPRequestWithAuthRetry(
+        method: String,
+        url: String,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> (statusCode: Int, headers: [String: String], bodyText: String) {
+        var resp = try await self.sendRTSPRequest(method: method, url: url, extraHeaders: extraHeaders)
+        if resp.statusCode == 401, let authHdr = resp.headers["www-authenticate"] {
+            if let digest = HTTPDigestHelper.parseChallenge(authHdr) {
+                self.digestChallenge = digest
+                self.basicChallenge = false
+            } else {
+                self.digestChallenge = nil
+                self.basicChallenge = true
+            }
+            resp = try await self.sendRTSPRequest(method: method, url: url, extraHeaders: extraHeaders)
+        }
+        return resp
+    }
+
+    private func sendRTSPRequest(
+        method: String,
+        url: String,
+        extraHeaders: [String: String] = [:]
+    ) async throws -> (statusCode: Int, headers: [String: String], bodyText: String) {
         guard let conn = self.connection else {
             throw NSError(domain: "DirectCam.RTSP", code: 10, userInfo: [NSLocalizedDescriptionKey: "RTSP socket disconnected."])
         }
@@ -325,10 +363,10 @@ final class RTSPStreamSession: ObservableObject {
         if !self.sessionId.isEmpty && method != "OPTIONS" && method != "DESCRIBE" {
             msg += "Session: \(self.sessionId)\r\n"
         }
-        if let auth = self.lastAuthHeader {
+        if let auth = self.authorizationHeader(method: method, uri: url) {
             msg += "Authorization: \(auth)\r\n"
         }
-        for (k, v) in extraHeaders where k != "Session" {
+        for (k, v) in extraHeaders where k != "Session" && k != "Authorization" {
             msg += "\(k): \(v)\r\n"
         }
         msg += "\r\n"
@@ -340,11 +378,26 @@ final class RTSPStreamSession: ObservableObject {
             })
         }
 
-        // Wait for header terminator `\r\n\r\n`
+        let headerTerminator = Data("\r\n\r\n".utf8)
         while true {
-            if let range = self.recvBuffer.range(of: Data("\r\n\r\n".utf8)) {
-                let hdrData = self.recvBuffer.subdata(in: 0..<range.lowerBound)
-                self.recvBuffer.removeSubrange(0..<range.upperBound)
+            // Skip any interleaved binary frames that arrive before RTSP reply text
+            if self.recvBuffer.byte(at: 0) == 0x24 {
+                if self.recvBuffer.count >= 4,
+                   let b2 = self.recvBuffer.byte(at: 2),
+                   let b3 = self.recvBuffer.byte(at: 3) {
+                    let frameLen = (Int(b2) << 8) | Int(b3)
+                    if self.recvBuffer.count >= 4 + frameLen {
+                        self.recvBuffer.dropFirst(4 + frameLen)
+                        continue
+                    }
+                }
+                try await self.readNextChunk()
+                continue
+            }
+
+            if let range = self.recvBuffer.firstRange(of: headerTerminator) {
+                let hdrData = self.recvBuffer.slice(0..<range.lowerBound) ?? Data()
+                self.recvBuffer.dropFirst(range.upperBound)
                 let hdrString = String(decoding: hdrData, as: UTF8.self)
                 guard let parsed = RTSPProtocol.parseResponseHeader(hdrString) else {
                     continue
@@ -354,8 +407,7 @@ final class RTSPStreamSession: ObservableObject {
                     while self.recvBuffer.count < contentLen {
                         try await self.readNextChunk()
                     }
-                    let body = self.recvBuffer.subdata(in: 0..<contentLen)
-                    self.recvBuffer.removeFirst(contentLen)
+                    let body = self.recvBuffer.read(contentLen) ?? Data()
                     return (parsed.statusCode, parsed.headers, String(decoding: body, as: UTF8.self))
                 }
                 return (parsed.statusCode, parsed.headers, "")
@@ -369,7 +421,7 @@ final class RTSPStreamSession: ObservableObject {
             guard let self else { return }
             while !self.stoppedByUser && self.connection != nil {
                 do {
-                    try await self.processAvailableInterleavedFrames()
+                    self.processAvailableInterleavedFrames()
                     try await self.readNextChunk()
                 } catch {
                     if !self.stoppedByUser {
@@ -381,34 +433,39 @@ final class RTSPStreamSession: ObservableObject {
         }
     }
 
-    private func processAvailableInterleavedFrames() async throws {
+    private func processAvailableInterleavedFrames() {
         while true {
-            // Skip any unexpected RTSP text response bytes until `$` interleaved framing marker
-            while let first = self.recvBuffer.first, first != 0x24 {
-                if let dollar = self.recvBuffer.firstIndex(of: 0x24) {
-                    self.recvBuffer.removeFirst(dollar)
+            while let first = self.recvBuffer.byte(at: 0), first != 0x24 {
+                if let dollarOffset = self.recvBuffer.firstIndex(of: 0x24) {
+                    self.recvBuffer.dropFirst(dollarOffset)
                 } else {
-                    self.recvBuffer.removeAll(keepingCapacity: true)
+                    self.recvBuffer.removeAll()
                     return
                 }
             }
-            guard self.recvBuffer.count >= 4 else { return }
-            let channel = self.recvBuffer[self.recvBuffer.startIndex + 1]
-            let b2 = Int(self.recvBuffer[self.recvBuffer.startIndex + 2])
-            let b3 = Int(self.recvBuffer[self.recvBuffer.startIndex + 3])
-            let frameLen = (b2 << 8) | b3
+            guard self.recvBuffer.count >= 4,
+                  let channel = self.recvBuffer.byte(at: 1),
+                  let b2 = self.recvBuffer.byte(at: 2),
+                  let b3 = self.recvBuffer.byte(at: 3) else {
+                return
+            }
+            let frameLen = (Int(b2) << 8) | Int(b3)
             guard self.recvBuffer.count >= 4 + frameLen else { return }
 
-            let payload = self.recvBuffer.subdata(in: 4..<(4 + frameLen))
-            self.recvBuffer.removeFirst(4 + frameLen)
+            self.recvBuffer.dropFirst(4)
+            guard let payload = self.recvBuffer.read(frameLen) else { return }
             self.bytesWindow += frameLen
 
-            if channel == 0, let depacketizer = self.videoDepacketizer, let decoder = self.videoDecoder {
+            if channel == self.videoRTPChannel,
+               let depacketizer = self.videoDepacketizer,
+               let decoder = self.videoDecoder {
                 if let unit = depacketizer.processRTPPacket(payload),
                    let frame = decoder.decode(unit: unit) {
                     self.handleDecodedVideoFrame(frame, decoder: decoder)
                 }
-            } else if channel == 2, let audioCodec = self.audioCodec, !self.isMuted {
+            } else if channel == self.audioRTPChannel,
+                      let audioCodec = self.audioCodec,
+                      !self.isMuted {
                 let pcm = G711Decoder.decodeRTPPayload(payload, codec: audioCodec)
                 if !pcm.isEmpty {
                     self.audioPlayer.enqueueSamples(pcm)
@@ -539,7 +596,11 @@ final class RTSPStreamSession: ObservableObject {
         self.keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 25.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, let conn = self.connection, !self.sessionId.isEmpty else { return }
-                let msg = "GET_PARAMETER \(self.rtspURLString) RTSP/1.0\r\nCSeq: \(self.cseq)\r\nSession: \(self.sessionId)\r\n\r\n"
+                var msg = "GET_PARAMETER \(self.rtspURLString) RTSP/1.0\r\nCSeq: \(self.cseq)\r\nSession: \(self.sessionId)\r\n"
+                if let auth = self.authorizationHeader(method: "GET_PARAMETER", uri: self.rtspURLString) {
+                    msg += "Authorization: \(auth)\r\n"
+                }
+                msg += "\r\n"
                 self.cseq += 1
                 conn.send(content: Data(msg.utf8), completion: .contentProcessed { _ in })
             }

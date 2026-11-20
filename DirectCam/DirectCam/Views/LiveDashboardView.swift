@@ -1,9 +1,20 @@
 import SwiftUI
 
+private enum CameraEditorTarget: Identifiable {
+    case add
+    case edit(CameraProfile)
+
+    var id: String {
+        switch self {
+        case .add: return "add"
+        case .edit(let profile): return "edit-\(profile.id.uuidString)"
+        }
+    }
+}
+
 struct LiveDashboardView: View {
     @EnvironmentObject private var appState: AppState
-    @State private var showEditor = false
-    @State private var editingCamera: CameraProfile?
+    @State private var editorTarget: CameraEditorTarget?
     @State private var isFullscreen = false
     @State private var showPTZPopover = false
 
@@ -41,17 +52,22 @@ struct LiveDashboardView: View {
                             }
                         }
                         Button {
-                            self.editingCamera = nil
-                            self.showEditor = true
+                            self.editorTarget = .add
                         } label: {
                             Image(systemName: "plus")
                         }
                     }
                 }
             }
-            .sheet(isPresented: self.$showEditor) {
-                CameraEditorSheet(existingProfile: self.editingCamera)
-                    .environmentObject(self.appState)
+            .sheet(item: self.$editorTarget) { target in
+                switch target {
+                case .add:
+                    CameraEditorSheet(existingProfile: nil, initialPassword: "")
+                        .environmentObject(self.appState)
+                case .edit(let profile):
+                    CameraEditorSheet(existingProfile: profile, initialPassword: self.appState.password(for: profile))
+                        .environmentObject(self.appState)
+                }
             }
         }
     }
@@ -85,8 +101,7 @@ struct LiveDashboardView: View {
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button("Edit Camera") {
-                            self.editingCamera = cam
-                            self.showEditor = true
+                            self.editorTarget = .edit(cam)
                         }
                     }
                 }
@@ -202,8 +217,7 @@ struct LiveDashboardView: View {
                         }
 
                         Button {
-                            self.editingCamera = camera
-                            self.showEditor = true
+                            self.editorTarget = .edit(camera)
                         } label: {
                             Label("Setup", systemImage: "slider.horizontal.3")
                         }
@@ -252,8 +266,7 @@ struct LiveDashboardView: View {
             Text("Add your Xiongmai / ONVIF camera by IP address or scan your local Wi-Fi network.")
                 .foregroundStyle(Theme.muted)
             Button("Add Camera") {
-                self.editingCamera = nil
-                self.showEditor = true
+                self.editorTarget = .add
             }
             .buttonStyle(.borderedProminent)
             .tint(Theme.teal)

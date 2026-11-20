@@ -6,20 +6,37 @@ struct CameraEditorSheet: View {
 
     let existingProfile: CameraProfile?
 
-    @State private var name = "Outdoor Camera"
-    @State private var host = "192.168.2.46"
-    @State private var username = "admin"
-    @State private var password = ""
-    @State private var rtspPort = 554
-    @State private var onvifPort = 8899
-    @State private var dvripPort = 34567
-    @State private var channel = 0
-    @State private var pathStyle: RTSPPathStyle = .xiongmaiAmp
-    @State private var preferredStream: StreamQuality = .main
-    @State private var customMainPath = "/stream1"
-    @State private var customSubPath = "/stream2"
+    @State private var name: String
+    @State private var host: String
+    @State private var username: String
+    @State private var password: String
+    @State private var rtspPort: Int
+    @State private var onvifPort: Int
+    @State private var dvripPort: Int
+    @State private var channel: Int
+    @State private var pathStyle: RTSPPathStyle
+    @State private var preferredStream: StreamQuality
+    @State private var customMainPath: String
+    @State private var customSubPath: String
     @State private var probeResult: PortProbeResult?
     @State private var isProbing = false
+
+    init(existingProfile: CameraProfile?, initialPassword: String = "") {
+        self.existingProfile = existingProfile
+        let base = existingProfile ?? CameraProfile()
+        _name = State(initialValue: base.name)
+        _host = State(initialValue: base.host)
+        _username = State(initialValue: base.username)
+        _password = State(initialValue: initialPassword)
+        _rtspPort = State(initialValue: base.rtspPort)
+        _onvifPort = State(initialValue: base.onvifPort)
+        _dvripPort = State(initialValue: base.dvripPort)
+        _channel = State(initialValue: base.channel)
+        _pathStyle = State(initialValue: base.rtspPathStyle)
+        _preferredStream = State(initialValue: base.preferredStream)
+        _customMainPath = State(initialValue: base.customMainPath)
+        _customSubPath = State(initialValue: base.customSubPath)
+    }
 
     var body: some View {
         NavigationStack {
@@ -60,7 +77,16 @@ struct CameraEditorSheet: View {
                     TextField("Username", text: self.$username)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                    SecureField("Device Password (Stored in Keychain)", text: self.$password)
+                    SecureField("Device Password", text: self.$password)
+                    if !self.password.isEmpty {
+                        Label("Password entered (\(self.password.count) characters) — stored on device when saved.", systemImage: "lock.shield")
+                            .font(.caption)
+                            .foregroundStyle(Theme.teal)
+                    } else {
+                        Label("No device password saved yet.", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(Theme.amber)
+                    }
                 }
 
                 Section("Direct Protocol Ports") {
@@ -136,22 +162,6 @@ struct CameraEditorSheet: View {
                         self.saveProfile()
                     }
                     .disabled(self.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .onAppear {
-                if let existing = self.existingProfile {
-                    self.name = existing.name
-                    self.host = existing.host
-                    self.username = existing.username
-                    self.password = self.appState.password(for: existing)
-                    self.rtspPort = existing.rtspPort
-                    self.onvifPort = existing.onvifPort
-                    self.dvripPort = existing.dvripPort
-                    self.channel = existing.channel
-                    self.pathStyle = existing.rtspPathStyle
-                    self.preferredStream = existing.preferredStream
-                    self.customMainPath = existing.customMainPath
-                    self.customSubPath = existing.customSubPath
                 }
             }
         }

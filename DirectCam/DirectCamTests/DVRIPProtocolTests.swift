@@ -91,4 +91,22 @@ final class DVRIPProtocolTests: XCTestCase {
         XCTAssertTrue(extracted.detectedHEVC)
         XCTAssertEqual(extracted.annexBData, iframeAnnexB + pframeAnnexB)
     }
+
+    func testByteBufferDecodesConsecutiveDVRIPPacketsCleanly() throws {
+        let p1 = try DVRIPProtocol.encodePacket(sessionId: 0x10, sequence: 1, messageId: 1000, jsonObject: ["Ret": 100])
+        let p2 = try DVRIPProtocol.encodePacket(sessionId: 0x10, sequence: 2, messageId: 1021, jsonObject: ["Name": "SystemInfo"])
+        var buf = ByteBuffer()
+        buf.append(p1 + p2)
+
+        for (expectedSeq, expectedMsg) in [(UInt32(1), UInt16(1000)), (UInt32(2), UInt16(1021))] {
+            let hdrData = try XCTUnwrap(buf.slice(0..<DVRIPProtocol.headerLength))
+            let hdr = try XCTUnwrap(DVRIPProtocol.decodeHeader(hdrData))
+            XCTAssertEqual(hdr.sequence, expectedSeq)
+            XCTAssertEqual(hdr.messageId, expectedMsg)
+            buf.dropFirst(DVRIPProtocol.headerLength)
+            let body = try XCTUnwrap(buf.read(Int(hdr.payloadLength)))
+            XCTAssertNotNil(DVRIPProtocol.parseJSONObject(fromPayload: body))
+        }
+        XCTAssertTrue(buf.isEmpty)
+    }
 }

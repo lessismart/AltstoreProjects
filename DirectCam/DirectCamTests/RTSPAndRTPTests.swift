@@ -111,4 +111,58 @@ final class RTSPAndRTPTests: XCTestCase {
         XCTAssertEqual(muLawSamples.count, 4)
         XCTAssertLessThan(abs(muLawSamples[2]), 0.01) // 0xFF mu-law ~ near silence
     }
+
+    func testByteBufferHandlesSequentialReadsDropsAndPatternSearchWithoutIndexCrash() {
+        var buf = ByteBuffer()
+        let hdr1 = Data("RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n".utf8)
+        let body2 = "v=0\r\nm=video 0 RTP/AVP 96\r\n"
+        let hdr2 = Data("RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: \(body2.utf8.count)\r\n\r\n\(body2)".utf8)
+        let rtp1Payload = Data([0x80, 0x60, 0x00, 0x01, 0xAA, 0xBB])
+        let rtp2Payload = Data([0x80, 0x60, 0x00, 0x02, 0xCC])
+
+        var frame1 = Data([0x24, 0x00, 0x00, UInt8(rtp1Payload.count)])
+        frame1.append(rtp1Payload)
+        var frame2 = Data([0x24, 0x02, 0x00, UInt8(rtp2Payload.count)])
+        frame2.append(rtp2Payload)
+
+        buf.append(hdr1 + hdr2 + frame1 + frame2)
+
+        let term = Data("\r\n\r\n".utf8)
+        let r1 = buf.firstRange(of: term)!
+        let parsed1 = RTSPProtocol.parseResponseHeader(String(decoding: buf.slice(0..<r1.lowerBound)!, as: UTF8.self))
+        XCTAssertEqual(parsed1?.statusCode, 200)
+        buf.dropFirst(r1.upperBound)
+
+        // Second message after dropFirst -> previously shifted Data.startIndex and crashed subdata(in: 0..<len)!
+        let r2 = buf.firstRange(of: term)!
+        let parsed2 = RTSPProtocol.parseResponseHeader(String(decoding: buf.slice(0..<r2.lowerBound)!, as: UTF8.self))
+        buf.dropFirst(r2.upperBound)
+        let len2 = Int(parsed2!.headers["content-length"]!)!
+        let sdpBody = String(decoding: buf.read(len2)!, as: UTF8.self)
+        XCTAssertEqual(sdpBody, body2)
+
+        // Interleaved `$` binary frames cleanly read at 0-relative indices
+        XCTAssertEqual(buf.byte(at: 0), 0x24)
+        XCTAssertEqual(buf.byte(at: 1), 0x00)
+        let f1Len = (Int(buf.byte(at: 2)!) << 8) | Int(buf.byte(at: 3)!)
+        buf.dropFirst(4)
+        XCTAssertEqual(buf.read(f1Len), rtp1Payload)
+
+        XCTAssertEqual(buf.byte(at: 0), 0x24)
+        XCTAssertEqual(buf.byte(at: 1), 0x02)
+        let f2Len = (Int(buf.byte(at: 2)!) << 8) | Int(buf.byte(at: 3)!)
+        buf.dropFirst(4)
+        XCTAssertEqual(buf.read(f2Len), rtp2Payload)
+        XCTAssertTrue(buf.isEmpty)
+    }
+
+    func testRTSPWireRequestURIOmitsCredentialsAndParsesInterleavedTransport() {
+        let profile = CameraProfile(name: "Gate", host: "192.168.2.46", rtspPort: 554, username: "admin", channel: 0, rtspPathStyle: .onvifAuto, discoveredMainURI: "rtsp://admin:pass@192.168.2.46:554/stream1")
+        let wireURI = RTSPProtocol.buildWireRequestURI(profile: profile, password: "pass", quality: .main)
+        XCTAssertEqual(wireURI, "rtsp://192.168.2.46:554/stream1")
+
+        let channels = RTSPProtocol.parseInterleavedChannels(fromTransportHeader: "RTP/AVP/TCP;unicast;interleaved=2-3;ssrc=1234")
+        XCTAssertEqual(channels?.rtp, 2)
+        XCTAssertEqual(channels?.rtcp, 3)
+    }
 }

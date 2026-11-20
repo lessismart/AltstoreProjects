@@ -57,6 +57,48 @@ enum RTSPProtocol {
         }
     }
 
+    /// RTSP wire Request-URI without embedded `user:pass@` authority; authentication uses Basic/Digest headers.
+    static func buildWireRequestURI(profile: CameraProfile, password: String, quality: StreamQuality) -> String {
+        let userEnc = Self.percentEncodeUserInfo(profile.username)
+        let passEnc = Self.percentEncodeUserInfo(password)
+
+        switch profile.rtspPathStyle {
+        case .onvifAuto:
+            let discovered = quality == .main ? profile.discoveredMainURI : profile.discoveredSubURI
+            if !discovered.isEmpty, var comps = URLComponents(string: discovered) {
+                comps.user = nil
+                comps.password = nil
+                if let url = comps.string { return url }
+            }
+            fallthrough
+        case .xiongmaiAmp:
+            let path = "/user=\(userEnc)&password=\(passEnc)&channel=\(profile.channel)&stream=\(quality.streamIndex).sdp?real_stream"
+            return "rtsp://\(profile.host):\(profile.rtspPort)\(path)"
+        case .xiongmaiUnderscore:
+            let path = "/user=\(userEnc)_password=\(passEnc)_channel=\(profile.channel)_stream=\(quality.streamIndex).sdp?real_stream"
+            return "rtsp://\(profile.host):\(profile.rtspPort)\(path)"
+        case .custom:
+            let rawPath = quality == .main ? profile.customMainPath : profile.customSubPath
+            let normalized = rawPath.hasPrefix("/") ? rawPath : "/\(rawPath)"
+            return "rtsp://\(profile.host):\(profile.rtspPort)\(normalized)"
+        }
+    }
+
+    static func parseInterleavedChannels(fromTransportHeader transport: String) -> (rtp: UInt8, rtcp: UInt8)? {
+        for part in transport.split(separator: ";") {
+            let trimmed = part.trimmingCharacters(in: .whitespaces).lowercased()
+            if trimmed.hasPrefix("interleaved=") {
+                let value = trimmed.dropFirst("interleaved=".count)
+                let pair = value.split(separator: "-")
+                if let first = pair.first, let rtp = UInt8(first) {
+                    let rtcp = pair.count > 1 ? (UInt8(pair[1]) ?? rtp &+ 1) : (rtp &+ 1)
+                    return (rtp, rtcp)
+                }
+            }
+        }
+        return nil
+    }
+
     static func redactedURL(_ raw: String) -> String {
         guard var comps = URLComponents(string: raw) else {
             return raw.replacingOccurrences(of: "password=[^&\\s]+", with: "password=***", options: .regularExpression)

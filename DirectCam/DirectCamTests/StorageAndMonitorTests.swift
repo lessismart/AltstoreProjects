@@ -83,4 +83,22 @@ final class StorageAndMonitorTests: XCTestCase {
         XCTAssertEqual(allowed.primaryKind, .human)
         XCTAssertEqual(allowed.bestConfidence, 0.85, accuracy: 0.001)
     }
+
+    func testCredentialVaultSavesLoadsAndDeletesPasswordAcrossFallback() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("DirectCamVault-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let vaultURL = tempDir.appendingPathComponent(".credentials.vault.json")
+        let camID = UUID()
+
+        let backend = try KeychainVault.savePassword("P@ssw0rd!", forCameraID: camID, fallbackVaultURL: vaultURL, skipKeychain: true)
+        XCTAssertEqual(backend, .localProtectedFile(0))
+        XCTAssertEqual(KeychainVault.loadPassword(forCameraID: camID, fallbackVaultURL: vaultURL, skipKeychain: true), "P@ssw0rd!")
+
+        // Updating and clearing password removes entry cleanly
+        _ = try KeychainVault.savePassword("Updated#2", forCameraID: camID, fallbackVaultURL: vaultURL, skipKeychain: true)
+        XCTAssertEqual(KeychainVault.loadPassword(forCameraID: camID, fallbackVaultURL: vaultURL, skipKeychain: true), "Updated#2")
+
+        KeychainVault.deletePassword(forCameraID: camID, fallbackVaultURL: vaultURL)
+        XCTAssertEqual(KeychainVault.loadPassword(forCameraID: camID, fallbackVaultURL: vaultURL, skipKeychain: true), "")
+    }
 }

@@ -10,6 +10,7 @@ struct ExportedCameraBundle: Codable, Sendable {
 final class CameraStore {
     let baseDirectory: URL
     private let profilesURL: URL
+    private let selectedCameraURL: URL
     private let monitorSettingsURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -26,6 +27,7 @@ final class CameraStore {
         self.baseDirectory = root
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         self.profilesURL = root.appendingPathComponent("cameras.json")
+        self.selectedCameraURL = root.appendingPathComponent("selected-camera.txt")
         self.monitorSettingsURL = root.appendingPathComponent("monitor-settings.json")
 
         let enc = JSONEncoder()
@@ -49,6 +51,22 @@ final class CameraStore {
     func saveCameras(_ cameras: [CameraProfile]) throws {
         let data = try self.encoder.encode(cameras)
         try data.write(to: self.profilesURL, options: [.atomic])
+    }
+
+    func loadSelectedCameraID() -> UUID? {
+        guard let str = try? String(contentsOf: self.selectedCameraURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return nil
+        }
+        return UUID(uuidString: str)
+    }
+
+    func saveSelectedCameraID(_ id: UUID?) {
+        guard let id else {
+            try? FileManager.default.removeItem(at: self.selectedCameraURL)
+            return
+        }
+        try? id.uuidString.write(to: self.selectedCameraURL, atomically: true, encoding: .utf8)
     }
 
     func loadMonitorSettings() -> MonitorSettings {
